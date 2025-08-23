@@ -1,28 +1,36 @@
 #!/bin/bash
 set -euo pipefail
 
-# ==== Config ====
-DISK="${DISK:-/dev/sda}"              # WARNING: will be wiped
-CHR_VERSION="${CHR_VERSION:-7.15.3}"  # Change if you want a newer version
+# --- Config (overrides allowed via env) ---
+CHR_VERSION="${CHR_VERSION:-7.15.3}"
 CHR_URL="https://download.mikrotik.com/routeros/${CHR_VERSION}/chr-${CHR_VERSION}.img.zip"
+DISK="${DISK:-}"           # If empty, auto-detect
+NON_INTERACTIVE="${NON_INTERACTIVE:-0}"  # Set to 1 to skip confirm prompt
 
 TMP_ZIP="/tmp/chr.img.zip"
 TMP_IMG="/tmp/chr.img"
 
-echo "[+] Target disk: $DISK"
-if ! lsblk -dn | grep -q "$(basename "$DISK")"; then
-  echo "[!] Disk $DISK not found. Aborting."
-  exit 1
-fi
+say() { echo -e "\033[1;32m[+]\033[0m $*"; }
+warn() { echo -e "\033[1;33m[!]\033[0m $*"; }
+err() { echo -e "\033[1;31m[x]\033[0m $*" >&2; }
 
-echo "[+] Downloading MikroTik CHR $CHR_VERSION ..."
-curl -fL "$CHR_URL" -o "$TMP_ZIP"
+auto_detect_disk() {
+  # Pick the largest physical disk with TYPE=disk (ignore loop/rom)
+  # Works for sda/vda/nvme0n1, etc.
+  local picked
+  picked=$(lsblk -dn -o NAME,TYPE,SIZE | awk '$2=="disk"{print $0}' | sort -k3 -h | tail -1 | awk '{print $1}')
+  [[ -n "$picked" ]] && echo "/dev/$picked" || echo ""
+}
+
+confirm_or_exit() {
+  [[ "$NON_INTERACTIVE" = "1" ]] && return 0
+  warn "This will ERASE ALL DATA on $DISK. Type 'YES' to continue:"
+  read -r ans
+  [[ "$ans" = "YES" ]] || { err "Aborted."; exit 1; }
+}
 
 extract_img() {
-  echo "[+] Extracting image..."
-  if command -v funzip >/dev/null 2>&1; then
-    funzip "$TMP_ZIP" > "$TMP_IMG" && return 0
-  fi
+  say "Extracting image..."
   if command -v unzip >/dev/null 2>&1; then
     unzip -p "$TMP_ZIP" > "$TMP_IMG" && return 0
   fi
@@ -34,44 +42,62 @@ extract_img() {
   fi
   if command -v python3 >/dev/null 2>&1; then
     python3 - <<'PY'
-import zipfile, sys
+import zipfile
 zip_path = "/tmp/chr.img.zip"
 out_path = "/tmp/chr.img"
 with zipfile.ZipFile(zip_path) as zf:
-    # Take the first entry (the .img)
+    # pick first file (the .img)
     name = zf.namelist()[0]
     with zf.open(name) as src, open(out_path, "wb") as dst:
         dst.write(src.read())
 PY
     return 0
   fi
-  # Last resort: try to install unzip if apt-get is present (Debian/Ubuntu rescue)
   if command -v apt-get >/dev/null 2>&1; then
-    echo "[+] Installing unzip..."
-    apt-get update -y && apt-get install -y unzip
+    say "Installing unzip..."
+    apt-get update -y && apt-get install -y unzip >/dev/null
     unzip -p "$TMP_ZIP" > "$TMP_IMG" && return 0
   fi
   return 1
 }
 
-if ! extract_img; then
-  echo "[!] Could not extract ZIP (no funzip/unzip/bsdtar/7z/python3 and apt-get unavailable)."
+# --- Main ---
+say "MikroTik CHR installer (version $CHR_VERSION)"
+
+if [[ -z "${DISK}" ]]; then
+  DISK="$(auto_detect_disk)"
+  [[ -n "$DISK" ]] || { err "No target disk found."; exit 1; }
+  say "Auto-detected disk: $DISK"
+fi
+
+# sanity check disk exists
+if ! lsblk -dn | awk '{print "/dev/"$1}' | grep -qx "$DISK"; then
+  err "Disk $DISK not found in lsblk output."
   exit 1
 fi
 
-echo "[+] Writing image to $DISK (this will erase ALL data)..."
-# Use pv if available for nicer progress; otherwise fall back to dd status=progress
+confirm_or_exit
+
+say "Downloading CHR image..."
+curl -fL "$CHR_URL" -o "$TMP_ZIP"
+
+if ! extract_img; then
+  err "Failed to extract ZIP (no unzip/bsdtar/7z/python3 and can't install)."
+  exit 1
+fi
+
+say "Writing image to $DISK (this will erase everything)..."
 if command -v pv >/dev/null 2>&1; then
   pv "$TMP_IMG" | dd of="$DISK" bs=1M conv=fsync status=progress
 else
   dd if="$TMP_IMG" of="$DISK" bs=1M conv=fsync status=progress
 fi
 
-echo "[+] Flushing writes..."
+say "Flushing writes..."
 sync
 
-echo "[+] Cleaning up..."
+say "Cleaning up..."
 rm -f "$TMP_IMG" "$TMP_ZIP"
 
-echo "[+] Done. Rebooting into MikroTik CHR..."
+say "Done. Rebooting into MikroTik CHR..."
 reboot
