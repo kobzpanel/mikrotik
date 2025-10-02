@@ -30,7 +30,65 @@ This script automates the installation of MikroTik CHR (RouterOS) on virtual pri
 ```bash
 wget -O install-chr.sh https://raw.githubusercontent.com/kobzpanel/mikrotik/refs/heads/main/install_chr.sh
 chmod +x install_chr.sh
+```
 
 ```bash
   bash -c "$(curl -L https://raw.githubusercontent.com/kobzpanel/mikrotik/refs/heads/main/install_chr.sh)"
+```
+
+
+# MikroTik CHR Login Guide
+
+Complete guide on how to access and log into your MikroTik CHR after installation.
+
+## 🌐 Access Methods
+
+### 1. Web Interface (WinBox/WebFig)
+### 2. SSH Console
+### 3. Serial Console (VPS Provider)
+
+---
+
+## 🔗 Method 1: Web Interface Login
+
+### Default Web Access
+- **URL**: `https://YOUR_VPS_IP`
+- **Port**: 443 (HTTPS) or 80 (HTTP)
+- **Username**: `admin`
+- **Password**: *[blank initially]*
+
+
+# Example:
+https://192.168.1.100
+# or
+http://192.168.1.100:80
+
+
+
+
+🤝 Contributing
+Contributions welcome! Please:
+
+Fork the repository
+
+Create a feature branch
+
+Test on multiple platforms
+
+Submit pull request
+
+📄 License
+MIT License
+
+🙏 Acknowledgments
+MikroTik for CHR and RouterOS
+
+Cloud providers supporting custom images
+
+Open source community
+
+Maintainer: Al Amin
+Contact: https://facebook.com/alaminbd17
+Last Updated: 2024
+
 
