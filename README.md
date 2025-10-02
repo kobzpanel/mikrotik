@@ -62,19 +62,6 @@ Complete guide on how to access and log into your MikroTik CHR after installatio
 http://192.168.1.100
 
 
-
-
-🤝 Contributing
-Contributions welcome! Please:
-
-Fork the repository
-
-Create a feature branch
-
-Test on multiple platforms
-
-Submit pull request
-
 📄 License
 MIT License
 
