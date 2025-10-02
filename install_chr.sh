@@ -1,189 +1,217 @@
-#!/bin/bash
-set -euo pipefail
+#!/bin/bash -e
 
-# --- Config (overrides allowed via env) ---
-CHR_VERSION="${CHR_VERSION:-7.20}"
-CHR_URL="https://download.mikrotik.com/routeros/${CHR_VERSION}/chr-${CHR_VERSION}.img.zip"
-DISK="${DISK:-}"           # If empty, auto-detect
-NON_INTERACTIVE="${NON_INTERACTIVE:-0}"  # Set to 1 to skip confirm prompt
-
-TMP_ZIP="chr.img.zip"
-TMP_IMG="chr.img"
-
-say() { echo -e "\033[1;32m[+]\033[0m $*"; }
-warn() { echo -e "\033[1;33m[!]\033[0m $*"; }
-err() { echo -e "\033[1;31m[x]\033[0m $*" >&2; }
-
-auto_detect_disk() {
-  if ! command -v lsblk >/dev/null 2>&1; then
-    echo ""
-    return 0
-  fi
-  # Pick the largest physical disk with TYPE=disk (ignore loop/rom)
-  local picked
-  picked=$(lsblk -dn -o NAME,TYPE,SIZE 2>/dev/null | awk '$2=="disk"{print $0}' | sort -k3 -hr | head -1 | awk '{print $1}')
-  [[ -n "$picked" ]] && echo "/dev/$picked" || echo ""
-}
-
-check_disk_exists() {
-  if command -v lsblk >/dev/null 2>&1; then
-    lsblk -dn | awk '{print "/dev/"$1}' | grep -qx "$DISK"
-  else
-    # Fallback: check if block device
-    test -b "$DISK"
-  fi
-}
-
-confirm_or_exit() {
-  [[ "$NON_INTERACTIVE" = "1" ]] && return 0
-  warn "This will ERASE ALL DATA on $DISK. Type 'YES' to continue:"
-  read -r ans
-  [[ "$ans" = "YES" ]] || { err "Aborted."; exit 1; }
-}
-
-detect_network() {
-  local eth gateway address
-  if ! command -v ip >/dev/null 2>&1; then
-    err "ip command not found. Cannot detect network config."
-    exit 1
-  fi
-  eth=$(ip route show default 2>/dev/null | sed -n 's/.* dev \([^\ ]*\) .*/\1/p' | head -1)
-  [[ -n "$eth" ]] || { err "Default route not found."; exit 1; }
-  say "Detected interface: $eth"
-  address=$(ip addr show "$eth" 2>/dev/null | awk '/scope global/ {print $2; exit}')
-  [[ -n "$address" ]] && say "Detected address: $address" || warn "No global IP on $eth"
-  gateway=$(ip route | grep '^default' | awk '{print $3}' | head -1)
-  [[ -n "$gateway" ]] && say "Detected gateway: $gateway" || warn "No default gateway found"
-  echo "After reboot into CHR (default login: admin, no password):"
-  echo "  /ip address add address=$address interface=$eth"
-  if [[ -n "$gateway" ]]; then
-    echo "  /ip route add dst-address=0.0.0.0/0 gateway=$gateway"
-  fi
-  echo "Then /system reboot to apply."
-}
-
-download_img() {
-  say "Downloading CHR image..."
-  if command -v wget >/dev/null 2>&1; then
-    wget -O "$TMP_ZIP" "$CHR_URL"
-  elif command -v curl >/dev/null 2>&1; then
-    curl -fL -o "$TMP_ZIP" "$CHR_URL"
-  else
-    err "Neither wget nor curl found. Please install one."
-    exit 1
-  fi
-}
-
-extract_img() {
-  say "Extracting image..."
-  if command -v unzip >/dev/null 2>&1; then
-    unzip -p "$TMP_ZIP" > "$TMP_IMG" && return 0
-  fi
-  if command -v bsdtar >/dev/null 2>&1; then
-    bsdtar -O -xf "$TMP_ZIP" > "$TMP_IMG" && return 0
-  fi
-  if command -v 7z >/dev/null 2>&1; then
-    7z e -so "$TMP_ZIP" > "$TMP_IMG" && return 0
-  fi
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PY'
-import zipfile
-import sys
-zip_path = "chr.img.zip"
-out_path = "chr.img"
-try:
-    with zipfile.ZipFile(zip_path) as zf:
-        name = zf.namelist()[0]
-        with zf.open(name) as src, open(out_path, "wb") as dst:
-            dst.write(src.read())
-    sys.exit(0)
-except Exception as e:
-    print(f"Error: {e}", file=sys.stderr)
-    sys.exit(1)
-PY
-    return 0
-  fi
-  # Install unzip if possible
-  if command -v apt-get >/dev/null 2>&1; then
-    say "Installing unzip (Debian/Ubuntu)..."
-    apt-get update -qq && apt-get install -y unzip >/dev/null
-    unzip -p "$TMP_ZIP" > "$TMP_IMG" && return 0
-  elif command -v yum >/dev/null 2>&1; then
-    say "Installing unzip (RHEL/CentOS 7)..."
-    yum install -y unzip >/dev/null 2>&1
-    unzip -p "$TMP_ZIP" > "$TMP_IMG" && return 0
-  elif command -v dnf >/dev/null 2>&1; then
-    say "Installing unzip (Fedora/RHEL 8+)..."
-    dnf install -y unzip >/dev/null 2>&1
-    unzip -p "$TMP_ZIP" > "$TMP_IMG" && return 0
-  elif command -v apk >/dev/null 2>&1; then
-    say "Installing unzip (Alpine)..."
-    apk add --no-cache unzip >/dev/null 2>&1
-    unzip -p "$TMP_ZIP" > "$TMP_IMG" && return 0
-  elif command -v pacman >/dev/null 2>&1; then
-    say "Installing unzip (Arch)..."
-    pacman -S --noconfirm unzip >/dev/null 2>&1
-    unzip -p "$TMP_ZIP" > "$TMP_IMG" && return 0
-  elif command -v zypper >/dev/null 2>&1; then
-    say "Installing unzip (openSUSE)..."
-    zypper --non-interactive install unzip >/dev/null 2>&1
-    unzip -p "$TMP_ZIP" > "$TMP_IMG" && return 0
-  fi
-  err "Failed to extract ZIP (no suitable tool and couldn't install unzip)."
-  return 1
-}
-
-# --- Main ---
 echo
 echo "=== AL AMIN ==="
-echo "
-    _    _          _    __  __ ___ _   _ 
-   / \  | |        / \  |  \/  |_ _| \ | |
-  / _ \ | |       / _ \ | |\/| || ||  \| |
- / ___ \| |___   / ___ \| |  | || || |\  |
-/_/   \_\_____| /_/   \_\_|  |_|___|_| \_|                                                                                
-"
-echo "***** https://facebook.com/alaminbd17 *****"
-
-echo "=== MikroTik CHR Installer (version $CHR_VERSION) ==="
+echo "=== https://facebook.com/alaminbd17 ==="
+echo "=== MikroTik CHR Installer ==="
+echo "=== Supports: Ubuntu, Debian, CentOS, Rocky Linux, AlmaLinux, Amazon Linux ==="
 echo
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run as root or with sudo"
+    exit 1
+fi
+
+# Detect OS and install required packages
+detect_os_and_install_deps() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        case $ID in
+            ubuntu|debian)
+                echo "Detected Debian-based system"
+                apt-get update
+                apt-get install -y wget curl gunzip lsblk iproute2
+                ;;
+            centos|rocky|almalinux|rhel)
+                echo "Detected RHEL-based system"
+                yum install -y wget curl gunzip util-linux iproute
+                ;;
+            amzn)
+                echo "Detected Amazon Linux"
+                yum install -y wget curl gunzip util-linux iproute
+                ;;
+            *)
+                echo "Unsupported OS: $ID"
+                echo "Trying to continue with basic tools..."
+                ;;
+        esac
+    else
+        echo "Cannot detect OS type. Trying to continue..."
+    fi
+}
+
+# Function to get network interface
+get_network_interface() {
+    # Try multiple methods to get the default network interface
+    if command -v ip >/dev/null 2>&1; then
+        ETH=$(ip route show default | sed -n 's/.* dev \([^ ]*\) .*/\1/p' 2>/dev/null | head -n1)
+    fi
+    
+    # Fallback methods
+    if [ -z "$ETH" ]; then
+        if command -v route >/dev/null 2>&1; then
+            ETH=$(route -n | grep '^0\.0\.0\.0' | grep -v 'UG.*tun' | head -n1 | awk '{print $8}')
+        fi
+    fi
+    
+    if [ -z "$ETH" ]; then
+        # Last resort - get first non-loopback interface
+        ETH=$(ls /sys/class/net/ | grep -v lo | head -n1)
+    fi
+    
+    echo "$ETH"
+}
+
+# Function to get storage device
+get_storage_device() {
+    # Try multiple methods to find the main storage device
+    if command -v lsblk >/dev/null 2>&1; then
+        STORAGE=$(lsblk -nd -o NAME,TYPE | grep 'disk' | awk '{print $1}' | head -n1)
+    elif [ -b /dev/vda ]; then
+        STORAGE="vda"
+    elif [ -b /dev/sda ]; then
+        STORAGE="sda"
+    elif [ -b /dev/xvda ]; then
+        STORAGE="xvda"
+    else
+        # Last resort - get first disk device
+        STORAGE=$(ls /dev/sd? /dev/vd? /dev/xvd? 2>/dev/null | head -n1 | sed 's|/dev/||')
+    fi
+    
+    echo "$STORAGE"
+}
+
+# Function to validate network information
+validate_network_info() {
+    if [ -z "$ETH" ]; then
+        echo "ERROR: Could not detect network interface"
+        exit 1
+    fi
+    
+    if [ -z "$ADDRESS" ]; then
+        echo "WARNING: Could not detect IP address"
+    fi
+    
+    if [ -z "$GATEWAY" ]; then
+        echo "WARNING: Could not detect gateway"
+    fi
+}
+
+# Function to download CHR image
+download_chr() {
+    local version="7.10"
+    local url="https://download.mikrotik.com/routeros/${version}/chr-${version}.img.zip"
+    local retries=3
+    local count=0
+    
+    while [ $count -lt $retries ]; do
+        echo "Downloading MikroTik CHR ${version} (attempt $((count+1))/$retries)..."
+        if wget --timeout=30 --tries=3 -O chr.img.zip "$url"; then
+            echo "Download completed successfully"
+            return 0
+        fi
+        count=$((count+1))
+        echo "Download failed, retrying in 5 seconds..."
+        sleep 5
+    done
+    
+    echo "ERROR: Failed to download CHR image after $retries attempts"
+    exit 1
+}
+
+echo "Starting installation process..."
 sleep 3
 
-if [[ -z "${DISK}" ]]; then
-  DISK="$(auto_detect_disk)"
-  [[ -n "$DISK" ]] || { err "No target disk found. Set DISK env var (e.g., /dev/sda)." && exit 1; }
-  say "Auto-detected disk: $DISK"
+# Install dependencies
+echo "Installing required dependencies..."
+detect_os_and_install_deps
+
+# Get system information
+echo "Detecting system configuration..."
+ETH=$(get_network_interface)
+STORAGE=$(get_storage_device)
+
+# Get network information
+if command -v ip >/dev/null 2>&1; then
+    ADDRESS=$(ip addr show "$ETH" 2>/dev/null | grep -oP 'inet \K[\d./]+' | head -n1)
+    GATEWAY=$(ip route show default 2>/dev/null | awk '/default/ {print $3}' | head -n1)
 fi
 
-# sanity check disk exists
-if ! check_disk_exists; then
-  err "Disk $DISK not found or not a block device."
-  exit 1
+# Display detected information
+echo "=== System Information ==="
+echo "Storage device: $STORAGE"
+echo "Network interface: $ETH"
+echo "IP address: $ADDRESS"
+echo "Gateway: $GATEWAY"
+echo
+
+# Validate network information
+validate_network_info
+
+echo "Proceeding with installation in 10 seconds..."
+echo "WARNING: This will overwrite the entire disk ($STORAGE) and destroy all data!"
+echo "Press Ctrl+C to cancel now!"
+sleep 10
+
+# Download and prepare CHR image
+echo "Downloading MikroTik CHR image..."
+download_chr
+
+echo "Extracting image..."
+if ! gunzip -c chr.img.zip > chr.img 2>/dev/null; then
+    echo "ERROR: Failed to extract image file"
+    echo "Trying alternative extraction method..."
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -o chr.img.zip
+    else
+        echo "Please install unzip or gunzip and try again"
+        exit 1
+    fi
 fi
 
-confirm_or_exit
-
-detect_network
-
-download_img
-
-if ! extract_img; then
-  exit 1
+# Verify the image file exists
+if [ ! -f chr.img ]; then
+    echo "ERROR: chr.img not found after extraction"
+    exit 1
 fi
 
-say "Writing image to $DISK (this will erase everything)..."
-dd if="$TMP_IMG" of="$DISK" bs=4M oflag=sync status=progress
+# Get image size
+IMAGE_SIZE=$(stat -c%s chr.img 2>/dev/null || stat -f%z chr.img 2>/dev/null)
+if [ -z "$IMAGE_SIZE" ] || [ "$IMAGE_SIZE" -lt 1000000 ]; then
+    echo "ERROR: Image file appears to be too small or invalid"
+    exit 1
+fi
 
-say "Flushing writes..."
+echo "Image size: $((IMAGE_SIZE/1024/1024)) MB"
+
+# Write image to disk
+echo "Writing image to /dev/$STORAGE (this may take several minutes)..."
+if ! dd if=chr.img of="/dev/$STORAGE" bs=4M status=progress oflag=sync; then
+    echo "ERROR: Failed to write image to disk"
+    exit 1
+fi
+
+echo "Syncing disks..."
 sync
 
-say "Cleaning up..."
-rm -f "$TMP_IMG" "$TMP_ZIP"
+# Final instructions
+echo
+echo "=== Installation Completed Successfully! ==="
+echo
+echo "Important notes:"
+echo "1. The system will now reboot into MikroTik CHR"
+echo "2. After reboot, connect to the console to configure"
+echo "3. Default username: admin (no password)"
+echo "4. Configure your IP address:"
+echo "   /ip address add address=$ADDRESS interface=ether1"
+echo "5. Add default route:"
+echo "   /ip route add gateway=$GATEWAY"
+echo
+echo "Rebooting in 10 seconds..."
+sleep 10
 
-say "Done. Rebooting into MikroTik CHR..."
-if command -v reboot >/dev/null 2>&1; then
-  reboot -f
-else
-  echo 1 > /proc/sys/kernel/sysrq
-  echo b > /proc/sysrq-trigger
-fi
+# Reboot system
+echo "Initiating reboot..."
+echo 1 > /proc/sys/kernel/sysrq
+echo b > /proc/sysrq-trigger
