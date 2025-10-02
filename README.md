@@ -18,5 +18,5 @@ It wipes the server’s primary disk, flashes a fresh MikroTik RouterOS CHR imag
 Run directly from Hetzner Rescue (Linux64):
 
 ```bash
-NON_INTERACTIVE=1 bash <(curl -fsSL https://raw.githubusercontent.com/kobzpanel/mikrotik/refs/heads/main/install_chr.sh)
+  bash -c "$(curl -L https://raw.githubusercontent.com/kobzpanel/mikrotik/refs/heads/main/install_chr.sh)"
 
