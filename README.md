@@ -52,16 +52,14 @@ Complete guide on how to access and log into your MikroTik CHR after installatio
 ## 🔗 Method 1: Web Interface Login
 
 ### Default Web Access
-- **URL**: `https://YOUR_VPS_IP`
-- **Port**: 443 (HTTPS) or 80 (HTTP)
+- **URL**: `http://YOUR_VPS_IP`
+- **Port**: 80 (HTTP)
 - **Username**: `admin`
 - **Password**: *[blank initially]*
 
 
 # Example:
-https://192.168.1.100
-# or
-http://192.168.1.100:80
+http://192.168.1.100
 
 
 
